@@ -12,6 +12,10 @@ const ROOMS_FILE = path.join(__dirname, "rooms.json");
 const ONE_HOUR = 60 * 60 * 1000;
 const rooms = {};
 
+// Reserved/banned names
+const RESERVED_NAMES = ["system", "owner", "admin", "moderator"];
+const BANNED_WORDS = ["badword1", "badword2", "slur1", "slur2"]; // extend this list
+
 // Serve static files (index.html, etc.)
 app.use(express.static(__dirname));
 
@@ -29,7 +33,8 @@ function loadRooms() {
         deleteTimerId: null,
         warningSent: false,
         password: r.password || null,
-        limit: r.limit || null
+        limit: r.limit || null,
+        usernames: new Set()
       };
     }
   } catch {}
@@ -59,7 +64,8 @@ function ensureRoom(code) {
       deleteTimerId: null,
       warningSent: false,
       password: null,
-      limit: null
+      limit: null,
+      usernames: new Set()
     };
     saveRooms();
   }
@@ -113,15 +119,48 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
+// Username validation
+function isNameInvalid(name, roomCode) {
+  const lower = name.toLowerCase();
+  if (RESERVED_NAMES.includes(lower)) return "That username is reserved.";
+  for (const w of BANNED_WORDS) {
+    if (lower.includes(w)) return "That username is not allowed.";
+  }
+  const r = rooms[roomCode];
+  if (r && r.usernames && r.usernames.has(lower)) {
+    return "That username is already taken in this room.";
+  }
+  return null;
+}
+
+// Endpoint to check room info (for front-end to decide password field)
+app.get("/roominfo/:code", (req, res) => {
+  const code = req.params.code;
+  const r = rooms[code];
+  if (!r) return res.json({ exists: false });
+  res.json({ exists: true, hasPassword: !!r.password });
+});
+
+// Broadcast user list
+function broadcastUserList(code) {
+  const r = rooms[code];
+  if (!r) return;
+  const users = Array.from(r.usernames || []);
+  io.to(code).emit("userlist", users);
+}
+
 // Socket.IO
 io.on("connection", socket => {
-  let joinedRoom = null;
-  let userName = null;
-
   socket.on("join", ({ room, name, password, limit }) => {
     const code = String(room || "default").trim();
-    userName = String(name || "Anon").trim();
     const r = ensureRoom(code);
+
+    const userName = String(name || "Anon").trim();
+    const invalidReason = isNameInvalid(userName, code);
+    if (invalidReason) {
+      socket.emit("join-error", { error: invalidReason });
+      return;
+    }
 
     // Password check
     if (r.password && r.password !== password) {
@@ -140,19 +179,23 @@ io.on("connection", socket => {
     if (!r.limit && limit) r.limit = limit;
 
     r.members += 1;
+    r.usernames.add(userName.toLowerCase());
     cancelDeletion(code);
     socket.join(code);
-    joinedRoom = code;
+
+    socket.data = { room: code, name: userName };
 
     socket.emit("joined", { room: code, messages: r.messages });
     const joinText = `${userName} joined the room.`;
     addMessage(code, { name: "System", text: joinText, system: true });
     socket.to(code).emit("message", { name: "System", text: joinText, system: true });
+
+    broadcastUserList(code);
   });
 
   socket.on("message", ({ room, name, text }) => {
-    const code = String(room || joinedRoom || "default");
-    const nm = String(name || userName || "Anon");
+    const code = String(room || (socket.data && socket.data.room) || "default");
+    const nm = String(name || (socket.data && socket.data.name) || "Anon");
     const tx = String(text || "").slice(0, 5000);
     if (!code || !tx) return;
     addMessage(code, { name: nm, text: tx, system: false });
@@ -160,13 +203,15 @@ io.on("connection", socket => {
   });
 
   socket.on("disconnect", () => {
-    if (!joinedRoom) return;
-    const code = joinedRoom;
+    const { room: code, name: userName } = socket.data || {};
+    if (!code) return;
     const r = rooms[code];
     if (!r) return;
     r.members = Math.max(0, r.members - 1);
+    if (userName) r.usernames.delete(userName.toLowerCase());
     addMessage(code, { name: "System", text: `${userName || "Anon"} left the room.`, system: true });
     if (r.members === 0) deleteRoom(code);
+    else broadcastUserList(code);
   });
 });
 
