@@ -81,7 +81,6 @@ function addMessage(code, msg) {
 }
 function deleteRoom(code) {
   if (!rooms[code]) return;
-  io.to(code).emit("room-deleted", { code });
   delete rooms[code];
   saveRooms();
 }
@@ -92,7 +91,6 @@ function scheduleDeletion(code, delay, reason) {
     r.warningSent = true;
     const warn = "This room is over 1 hour old and will be deleted in 60s unless there is activity.";
     addMessage(code, { name: "System", text: warn, system: true });
-    io.to(code).emit("message", { name: "System", text: warn, system: true });
   }
   r.deleteTimerId = setTimeout(() => deleteRoom(code), delay);
 }
@@ -102,11 +100,6 @@ function cancelDeletion(code) {
     clearTimeout(r.deleteTimerId);
     r.deleteTimerId = null;
     r.warningSent = false;
-    if (r.members > 0) {
-      const txt = "Deletion canceled: room activity detected.";
-      addMessage(code, { name: "System", text: txt, system: true });
-      io.to(code).emit("message", { name: "System", text: txt, system: true });
-    }
   }
 }
 setInterval(() => {
@@ -133,7 +126,7 @@ function isNameInvalid(name, roomCode) {
   return null;
 }
 
-// Endpoint to check room info (for front-end to decide password field)
+// Endpoint to check room info
 app.get("/roominfo/:code", (req, res) => {
   const code = req.params.code;
   const r = rooms[code];
@@ -141,13 +134,20 @@ app.get("/roominfo/:code", (req, res) => {
   res.json({ exists: true, hasPassword: !!r.password });
 });
 
-// Broadcast user list
-function broadcastUserList(code) {
+// Endpoint to fetch full room data (for polling)
+app.get("/room-data/:code", (req, res) => {
+  const code = req.params.code;
   const r = rooms[code];
-  if (!r) return;
-  const users = Array.from(r.usernames || []);
-  io.to(code).emit("userlist", users);
-}
+  if (!r) return res.json({ exists: false });
+  res.json({
+    exists: true,
+    room: code,
+    messages: r.messages,
+    users: Array.from(r.usernames || []),
+    limit: r.limit,
+    hasPassword: !!r.password
+  });
+});
 
 // Socket.IO
 io.on("connection", socket => {
@@ -185,12 +185,9 @@ io.on("connection", socket => {
 
     socket.data = { room: code, name: userName };
 
-    socket.emit("joined", { room: code, messages: r.messages });
+    socket.emit("joined", { room: code });
     const joinText = `${userName} joined the room.`;
     addMessage(code, { name: "System", text: joinText, system: true });
-    socket.to(code).emit("message", { name: "System", text: joinText, system: true });
-
-    broadcastUserList(code);
   });
 
   socket.on("message", ({ room, name, text }) => {
@@ -199,7 +196,6 @@ io.on("connection", socket => {
     const tx = String(text || "").slice(0, 5000);
     if (!code || !tx) return;
     addMessage(code, { name: nm, text: tx, system: false });
-    io.to(code).emit("message", { name: nm, text: tx, system: false });
   });
 
   socket.on("disconnect", () => {
@@ -211,7 +207,6 @@ io.on("connection", socket => {
     if (userName) r.usernames.delete(userName.toLowerCase());
     addMessage(code, { name: "System", text: `${userName || "Anon"} left the room.`, system: true });
     if (r.members === 0) deleteRoom(code);
-    else broadcastUserList(code);
   });
 });
 

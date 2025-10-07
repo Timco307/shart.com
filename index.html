@@ -97,6 +97,7 @@ const qpRoom=url.searchParams.get("room");
 const socket=io();
 let currentRoom=null;
 let userName=null;
+let pollInterval=null;
 
 // Elements
 const choiceScreen=document.getElementById("choiceScreen");
@@ -151,12 +152,12 @@ function showChat(){
   chatScreen.style.display="grid";
   roomLabel.textContent=currentRoom;
 }
+
 function addMsgEl(d){
   const div=document.createElement("div");
   div.className="msg"+(d.system?" system":"");
   div.innerHTML=d.system?escapeHtml(d.text):("<b>"+escapeHtml(d.name)+":</b> "+escapeHtml(d.text));
 
-  // Add trash icon for Ctrl+hover
   const trash=document.createElement("span");
   trash.textContent="🗑️";
   trash.className="trash";
@@ -171,7 +172,7 @@ function addMsgEl(d){
   div.appendChild(trash);
 
   div.addEventListener("mouseenter", e=>{
-    if(e.ctrlKey){
+    if(e.ctrlKey){ 
       div.classList.add("ctrl-hover");
     }
   });
@@ -216,15 +217,13 @@ function sendMsg(){
   msgInput.value="";
 }
 
-// Socket events
-socket.on("joined",({room,messages})=>{
+// When joined, start polling
+socket.on("joined",({room})=>{
   currentRoom=room;
   showChat();
-  messagesEl.innerHTML="";
-  messages.forEach(addMsgEl);
-  addMsgEl({name:"System",text:"You joined room "+room,system:true});
   statusEl.textContent="Connected";
   history.replaceState({}, "", "/?room="+encodeURIComponent(room));
+  startPolling(room);
 });
 
 socket.on("join-error",({error})=>{
@@ -235,21 +234,26 @@ socket.on("join-error",({error})=>{
   }
 });
 
-socket.on("message",addMsgEl);
-
-socket.on("room-deleted",({code})=>{
-  if(currentRoom===code){
-    addMsgEl({name:"System",text:"Room was deleted due to inactivity/age.",system:true});
-    statusEl.textContent="Disconnected";
-  }
-});
-
-socket.on("disconnect",()=>{statusEl.textContent="Disconnected";});
-
-// Update user list
-socket.on("userlist", users=>{
-  userListEl.textContent="Users: "+users.join(", ");
-});
+// Polling loop to refresh messages and users
+function startPolling(roomCode){
+  if(pollInterval) clearInterval(pollInterval);
+  pollInterval=setInterval(()=>{
+    fetch("/room-data/"+encodeURIComponent(roomCode))
+      .then(r=>r.json())
+      .then(data=>{
+        if(!data.exists){
+          addMsgEl({name:"System",text:"Room no longer exists.",system:true});
+          clearInterval(pollInterval);
+          return;
+        }
+        // Refresh messages
+        messagesEl.innerHTML="";
+        data.messages.forEach(addMsgEl);
+        // Refresh user list
+        userListEl.textContent="Users: "+data.users.join(", ");
+      });
+  },5000);
+}
 </script>
 </body>
 </html>
