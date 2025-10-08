@@ -81,6 +81,7 @@ function addMessage(code, msg) {
 }
 function deleteRoom(code) {
   if (!rooms[code]) return;
+  io.to(code).emit("room-deleted", { code });
   delete rooms[code];
   saveRooms();
 }
@@ -91,6 +92,7 @@ function scheduleDeletion(code, delay, reason) {
     r.warningSent = true;
     const warn = "This room is over 1 hour old and will be deleted in 60s unless there is activity.";
     addMessage(code, { name: "System", text: warn, system: true });
+    io.to(code).emit("message", { name: "System", text: warn, system: true });
   }
   r.deleteTimerId = setTimeout(() => deleteRoom(code), delay);
 }
@@ -188,6 +190,7 @@ io.on("connection", socket => {
     socket.emit("joined", { room: code });
     const joinText = `${userName} joined the room.`;
     addMessage(code, { name: "System", text: joinText, system: true });
+    socket.to(code).emit("message", { name: "System", text: joinText, system: true });
   });
 
   socket.on("message", ({ room, name, text }) => {
@@ -196,6 +199,7 @@ io.on("connection", socket => {
     const tx = String(text || "").slice(0, 5000);
     if (!code || !tx) return;
     addMessage(code, { name: nm, text: tx, system: false });
+    io.to(code).emit("message", { name: nm, text: tx, system: false });
   });
 
   socket.on("disconnect", () => {

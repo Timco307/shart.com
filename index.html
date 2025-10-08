@@ -217,7 +217,7 @@ function sendMsg(){
   msgInput.value="";
 }
 
-// When joined, start polling
+// When joined, show chat and start polling
 socket.on("joined",({room})=>{
   currentRoom=room;
   showChat();
@@ -226,6 +226,7 @@ socket.on("joined",({room})=>{
   startPolling(room);
 });
 
+// Errors
 socket.on("join-error",({error})=>{
   if(joinScreen.style.display==="block"){
     joinError.textContent=error;
@@ -234,7 +235,21 @@ socket.on("join-error",({error})=>{
   }
 });
 
-// Polling loop to refresh messages and users
+// Instant messages
+socket.on("message",addMsgEl);
+
+// Room deleted
+socket.on("room-deleted",({code})=>{
+  if(currentRoom===code){
+    addMsgEl({name:"System",text:"Room was deleted due to inactivity/age.",system:true});
+    statusEl.textContent="Disconnected";
+  }
+});
+
+// Disconnect
+socket.on("disconnect",()=>{statusEl.textContent="Disconnected";});
+
+// Polling loop to reconcile state every 5s
 function startPolling(roomCode){
   if(pollInterval) clearInterval(pollInterval);
   pollInterval=setInterval(()=>{
@@ -246,11 +261,13 @@ function startPolling(roomCode){
           clearInterval(pollInterval);
           return;
         }
-        // Refresh messages
-        messagesEl.innerHTML="";
-        data.messages.forEach(addMsgEl);
-        // Refresh user list
+        // Update user list
         userListEl.textContent="Users: "+data.users.join(", ");
+        // If server has more messages than we’ve rendered, append them
+        if(data.messages.length > messagesEl.children.length){
+          const newOnes = data.messages.slice(messagesEl.children.length);
+          newOnes.forEach(addMsgEl);
+        }
       });
   },5000);
 }
